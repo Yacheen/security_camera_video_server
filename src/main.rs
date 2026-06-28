@@ -1,21 +1,26 @@
 use tokio::net::UdpSocket;
-use std::io::Write;
+use tokio::sync::Mutex;
+use std::io::{Read, Write};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 use std::{error::Error, io, net::SocketAddr};
 struct Server {
-    socket: UdpSocket,
+    socket: Arc<Mutex<UdpSocket>>,
     buf: [u8; 50000],
     to_send: Option<(usize, SocketAddr)>,
 }
+struct VideoViewerWantsToWatchCurrentFootage {
+
+}
 impl Server {
     async fn run(&mut self) -> Result<(), io::Error> {
-        let mut ffmpeg = Command::new("ffmpeg")
+        let mut ffmpeg_video_writer = Command::new("ffmpeg")
             .args([
                 // inputs
                 "-f", "image2pipe",
                 "-vcodec", "mjpeg",
-                "-r", "20",
+                "-r", "14",
                 "-i", "-",
 
                 // outputs
@@ -29,19 +34,52 @@ impl Server {
             .stdout(Stdio::null())
             .spawn()
             .unwrap();
-        let mut stdin = ffmpeg.stdin.take().expect("Failed to open stdin to ffmpeg");
+        let mut stdin = ffmpeg_video_writer.stdin.take().expect("Failed to open stdin to ffmpeg");
         let mut frame_buffer = Vec::new();
         loop {
-            self.to_send = Some(self.socket.recv_from(&mut self.buf).await?);
+            self.to_send = Some(self.socket.lock().await.recv_from(&mut self.buf).await?);
 
             if let Some((size, client)) = self.to_send {
-                if size == 50000 {
-                        frame_buffer.extend_from_slice(&self.buf[..size]);
-                        self.buf.fill(0);
+                let message = String::from_utf8_lossy(&self.buf[.."video_viewer_watch".len()]); 
+                // spawn task to pipe mkv => rgb565be output to send chunks
+                if message == "video_viewer_watch" {
+                    let socket1 = self.socket.clone();
+                    tokio::spawn(async move {
+                        let mut ffmpeg_video_viewer_rgb565_output = Command::new("ffmpeg")
+                            .args([
+                                // inputs
+                                "-i", "src/videos/output.mkv",
+                                "-f", "rawvideo",
+                                "-pix_fmt", "rgb565be",
+                                // "-r", "14",
+                                "pipe:1",
+                            ])
+                            .stdin(Stdio::null())
+                            .stderr(Stdio::inherit())
+                            .stdout(Stdio::piped())
+                            .spawn()
+                            .unwrap();
+                        let mut stdout = ffmpeg_video_viewer_rgb565_output.stdout.take().expect("Failed to open stdin to ffmpeg");
+                        let mut rgb565_frame = [0_u8; 153_600]; 
+                        loop {
+                            // read_exact essentially is like clearing the buffer
+                            stdout.read_exact(&mut rgb565_frame).unwrap();
+                            for chunk in rgb565_frame.chunks(8192) {
+                                let _ = socket1.lock().await.send_to(chunk, client).await;
+                            }
+                        }
+                    });
                 }
+                // write to mkv file
+                else if size == 50000 {
+                    frame_buffer.extend_from_slice(&self.buf[..size]);
+                    self.buf.fill(0);
+                }
+                // ignore
                 else if size > 50000 {
                     println!("GREATER THAN 50000 BYTE PACKET DETECTED, DROPPING");
                 }
+                // full jpeg write to mkv file or finish writing jpeg to mkv file
                 else {
                     frame_buffer.extend_from_slice(&self.buf[..size]);
                     self.buf.fill(0);
@@ -61,9 +99,6 @@ impl Server {
 async fn convert_mp4_to_rgb565_for_video_viewer_task() {
 
 }
-async fn append_available_frames_to_mp4_task() {
-
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -75,7 +110,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Listening on {}...", socket.local_addr()?);
 
     let mut server = Server {
-        socket,
+        socket: Arc::new(Mutex::new(socket)),
         buf: [0_u8; 50000],
         to_send: None,
     };
