@@ -1,68 +1,68 @@
 use tokio::net::UdpSocket;
-use std::os::windows::fs::FileExt;
+use std::io::Write;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 use std::{error::Error, io, net::SocketAddr};
-use std::fs::{self, File};
 struct Server {
     socket: UdpSocket,
-    buf: [u8; 40_000],
+    buf: [u8; 50000],
     to_send: Option<(usize, SocketAddr)>,
 }
 impl Server {
     async fn run(&mut self) -> Result<(), io::Error> {
-        // let Server {
-        //     socket,
-        //     mut buf,
-        //     mut to_send,
-        // } = self;
-        let mut image_count = 0;
+        let mut ffmpeg = Command::new("ffmpeg")
+            .args([
+                // inputs
+                "-f", "image2pipe",
+                "-vcodec", "mjpeg",
+                "-r", "20",
+                "-i", "-",
 
-        
-        let writing_jpeg = false;
-        let mut current_offset: u64 = 0;
-        let mut current_filepath: Option<String> = None;
-        let mut file: Option<File> = None;
-        
+                // outputs
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-y",
+                "src/videos/output.mkv",
+            ])
+            .stdin(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut stdin = ffmpeg.stdin.take().expect("Failed to open stdin to ffmpeg");
+        let mut frame_buffer = Vec::new();
         loop {
-            // start loop when I receive a buffer with the first two bytes being 0xFF 0xD8
-            // continuously receive until last two bytes indicate end of a jpeg file, 0xFF 0xD9
             self.to_send = Some(self.socket.recv_from(&mut self.buf).await?);
 
             if let Some((size, client)) = self.to_send {
-                println!("byte size: {}", size);
-                if size == 40000 {
-                    // includes just start,
-                    // includes neither start nor end
-                    if self.buf[0] == 0xFF && self.buf[1] == 0xD8 {
-                        current_filepath = Some(format!("src/images/image_{}.jpeg", image_count));
-                        file = Some(fs::OpenOptions::new().write(true).create(true).open(current_filepath.clone().unwrap()).unwrap());
-                    }
-                    if let Some(file) = &file {
-                        file.seek_write(&self.buf[..size], current_offset).unwrap();
+                if size == 50000 {
+                        frame_buffer.extend_from_slice(&self.buf[..size]);
                         self.buf.fill(0);
-                        current_offset += 40000;
-                    }
                 }
-                else if size > 40000 {
-                    println!("GREATER THAN 40000 BYTE PACKET DETECTED, DROPPING");
+                else if size > 50000 {
+                    println!("GREATER THAN 50000 BYTE PACKET DETECTED, DROPPING");
                 }
                 else {
-                    // includes start, end
-                    // includes just end
-                    // write to a new jpeg file on disk.
-                    if let (Some(current_filepath), Some(file)) = (&current_filepath, &file) {
-                        file.seek_write(&self.buf[..size], current_offset).unwrap();
-                        println!("done writing bytes.");
-                        image_count += 1;
-                        // clear buffer since done writing jpeg.
-                        self.buf.fill(0);
+                    frame_buffer.extend_from_slice(&self.buf[..size]);
+                    self.buf.fill(0);
+                    if let Err(e) = stdin.write_all(&frame_buffer) {
+                        eprintln!("Failed to write frame to FFmpeg: {}", e);
                     }
-                    current_filepath = None;
-                    file = None;
-                    current_offset = 0;
+                    stdin.flush().unwrap();
+                    frame_buffer.clear();
                 }
             }
         }
+        // drop(stdin);
+        // ffmpeg.wait().unwrap();
     }
+}
+
+async fn convert_mp4_to_rgb565_for_video_viewer_task() {
+
+}
+async fn append_available_frames_to_mp4_task() {
+
 }
 
 #[tokio::main]
@@ -76,9 +76,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let mut server = Server {
         socket,
-        buf: [0_u8; 40_000],
+        buf: [0_u8; 50000],
         to_send: None,
     };
+    // 2. convert mp4 video to rgb565 for video_viewer, in 320wx240h format
+    // tokio::spawn(async move {
+    //     loop {
+    //     }
+    // });
+
 
     server.run().await?;
 
