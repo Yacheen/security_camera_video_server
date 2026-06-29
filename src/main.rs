@@ -41,8 +41,10 @@ impl Server {
 
             if let Some((size, client)) = self.to_send {
                 let message = String::from_utf8_lossy(&self.buf[.."video_viewer_watch".len()]); 
+                println!("got message. {:?}", String::from_utf8_lossy(&self.buf[..15]));
                 // spawn task to pipe mkv => rgb565be output to send chunks
                 if message == "video_viewer_watch" {
+                    println!("ITS A VIDEO_VIEWER_WATCH,  CREATING TASK TO PIPE RGB565 TO VIDEO VIEWER");
                     let socket1 = self.socket.clone();
                     tokio::spawn(async move {
                         let mut ffmpeg_video_viewer_rgb565_output = Command::new("ffmpeg")
@@ -64,7 +66,13 @@ impl Server {
                         loop {
                             // read_exact essentially is like clearing the buffer
                             stdout.read_exact(&mut rgb565_frame).unwrap();
-                            for chunk in rgb565_frame.chunks(8192) {
+                            // screen has to draw a proper rectangle at a time, and not just
+                            // iterate from left to right pixels i think... so 320widthx30height
+
+                            // doesnt seem to be sending to them. pico recv_from is getting
+                            // nothing...
+                            for chunk in rgb565_frame.chunks(9600) {
+                                println!("SENDING CHUNK--------------------...");
                                 let _ = socket1.lock().await.send_to(chunk, client).await;
                             }
                         }
