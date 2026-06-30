@@ -6,7 +6,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{error::Error, io, net::SocketAddr};
 struct Server {
-    socket: Arc<Mutex<UdpSocket>>,
+    socket: Arc<UdpSocket>,
     buf: [u8; 50000],
     to_send: Option<(usize, SocketAddr)>,
 }
@@ -37,12 +37,11 @@ impl Server {
         let mut stdin = ffmpeg_video_writer.stdin.take().expect("Failed to open stdin to ffmpeg");
         let mut frame_buffer = Vec::new();
         loop {
-            self.to_send = Some(self.socket.lock().await.recv_from(&mut self.buf).await?);
+            self.to_send = Some(self.socket.recv_from(&mut self.buf).await?);
 
             if let Some((size, client)) = self.to_send {
                 let message = String::from_utf8_lossy(&self.buf[.."video_viewer_watch".len()]); 
                 println!("got message. {:?}", String::from_utf8_lossy(&self.buf[..15]));
-                // spawn task to pipe mkv => rgb565be output to send chunks
                 if message == "video_viewer_watch" {
                     println!("ITS A VIDEO_VIEWER_WATCH,  CREATING TASK TO PIPE RGB565 TO VIDEO VIEWER");
                     let socket1 = self.socket.clone();
@@ -53,7 +52,7 @@ impl Server {
                                 "-i", "src/videos/output.mkv",
                                 "-f", "rawvideo",
                                 "-pix_fmt", "rgb565be",
-                                // "-r", "14",
+                                // "-r", "20",
                                 "pipe:1",
                             ])
                             .stdin(Stdio::null())
@@ -71,15 +70,18 @@ impl Server {
 
                             // doesnt seem to be sending to them. pico recv_from is getting
                             // nothing...
-                            for chunk in rgb565_frame.chunks(9600) {
-                                println!("SENDING CHUNK--------------------...");
-                                let _ = socket1.lock().await.send_to(chunk, client).await;
+                            println!("ip address of client: {:?}", client.ip());
+                            for chunk in rgb565_frame.chunks(1280) {
+                                let _ = socket1.send_to(chunk, client).await;
+                                // tokio::time::sleep(Duration::from_micros(10)).await;
                             }
+                            tokio::time::sleep(Duration::from_millis(50)).await;
                         }
                     });
                 }
                 // write to mkv file
                 else if size == 50000 {
+                    println!("frame is 50kilobytes, writing full chunk");
                     frame_buffer.extend_from_slice(&self.buf[..size]);
                     self.buf.fill(0);
                 }
@@ -89,6 +91,7 @@ impl Server {
                 }
                 // full jpeg write to mkv file or finish writing jpeg to mkv file
                 else {
+                    println!("frame is below 50kilobytes, writing part chunk");
                     frame_buffer.extend_from_slice(&self.buf[..size]);
                     self.buf.fill(0);
                     if let Err(e) = stdin.write_all(&frame_buffer) {
@@ -118,16 +121,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
     println!("Listening on {}...", socket.local_addr()?);
 
     let mut server = Server {
-        socket: Arc::new(Mutex::new(socket)),
+        socket: Arc::new(socket),
         buf: [0_u8; 50000],
         to_send: None,
     };
-    // 2. convert mp4 video to rgb565 for video_viewer, in 320wx240h format
-    // tokio::spawn(async move {
-    //     loop {
-    //     }
-    // });
-
 
     server.run().await?;
 
