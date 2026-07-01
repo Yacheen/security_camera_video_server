@@ -1,23 +1,16 @@
-use tokio::io::{self, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter, };
+use tokio::io::{self, AsyncReadExt, AsyncWriteExt };
 use tokio::join;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::process::Command;
-use std::io::{Read, Write};
 use std::process::Stdio;
 // use std::process::{Command, Stdio};
-use std::sync::Arc;
-use std::time::Duration;
 use std::{error::Error};
 // tcp stream for streaming video to video viewer
 // must be in order
 
 // UDP for security camera video stream piped to stdin, output.mkv
 // TCP for video viewer feed of outputmkv converted to rgb565 and piped to stdout, from output.mkv
-struct Server {
-    // udp_socket: Arc<UdpSocket>,
-    // udp_buf: [u8; 50000],
-    bla: u8,
-}   
+struct Server;
 static UDP_ADDR: &str = "0.0.0.0:6767";
 static TCP_ADDR: &str = "0.0.0.0:6769";
 impl Server {
@@ -30,7 +23,7 @@ impl Server {
                 tokio::spawn(async move {
                     let mut tcp_buf: [u8; 50000] = [0; 50000];
                     match socket.read(&mut tcp_buf).await {
-                         Ok(bytes_read) => {
+                         Ok(_bytes_read) => {
                             let message = String::from_utf8_lossy(&tcp_buf[.."video_viewer_watch".len()]); 
                             if message == "video_viewer_watch" {
                                 println!("video viewer watch requested. ip addr of client: {:?}", socket_addr.ip());
@@ -45,7 +38,6 @@ impl Server {
                                             // outputs
                                             "-f", "rawvideo",
                                             "-vf", "scale=320:240",
-                                            "-fps_mode", "passthrough",
                                             "-pix_fmt", "rgb565be",
                                             "-"
                                         ])
@@ -57,23 +49,21 @@ impl Server {
                                     let mut stdout = ffmpeg_video_viewer_rgb565_output.stdout.take().expect("Failed to open stdin to ffmpeg");
                                     let mut rgb565_frame = [0_u8; 153_600]; 
 
-                                    let status = ffmpeg_video_viewer_rgb565_output.wait().await.unwrap();
                                     println!("security footage finished.");
 
                                     loop {
-                                        match stdout.read_exact(&mut rgb565_frame).await {
-                                            Ok(idk) => {
-                                                // write in chunks
-                                                for chunk in rgb565_frame.chunks(51200) {
-                                                    let _ = socket.write_all(chunk).await;
-                                                }
-                                                // tokio::time::sleep(Duration::from_millis(100)).await;
-                                            }
-                                            Err(err) => {
-                                                // println!("problem reading rgb565 frame: {:?}", err);
-                                            }
+                                        stdout.read_exact(&mut rgb565_frame).await.unwrap();
+                                        for chunk in rgb565_frame.chunks(10240) {
+                                            let _ = socket.write_all(chunk).await;
                                         }
                                     }
+                                    // while stdout.read_exact(&mut rgb565_frame).await.is_ok() {
+                                        // for chunk in rgb565_frame.chunks(51200) {
+                                        //     let _ = socket.write_all(chunk).await;
+                                        // }
+                                        // tokio::time::sleep(Duration::from_millis(100)).await;
+                                    // }
+                                    // let status = ffmpeg_video_viewer_rgb565_output.wait().await.unwrap();
                                 });
                             }
                          }
@@ -114,7 +104,7 @@ impl Server {
             // for holding all of a jpeg
             let mut frame_buffer = Vec::new();
             loop {
-                let (size, socket_addr) = udp_socket.recv_from(&mut udp_buf).await.unwrap();
+                let (size, _socket_addr) = udp_socket.recv_from(&mut udp_buf).await.unwrap();
                 if size == 50000 {
                     println!("frame is 50kilobytes, writing full chunk");
                     frame_buffer.extend_from_slice(&udp_buf[..size]);
@@ -147,9 +137,7 @@ impl Server {
 async fn main() -> Result<(), Box<dyn Error>> {
     println!("Hello, world!");
 
-    let mut server = Server {
-        bla: 0
-    };
+    let mut server = Server;
 
     server.run().await?;
 
